@@ -14,7 +14,8 @@
 .Spotlight-V100
 .Trashes
 # Icon must end with two \r
-Icon
+Icon
+
 ehthumbs.db
 Thumbs.db
 .directory
@@ -62,5 +63,3 @@ yarn-error.log
 # Release packages (bin/build-release.sh)
 /build/
 
-# Private assets kept out of the repository and release packages (e.g. your real logo)
-/private/
