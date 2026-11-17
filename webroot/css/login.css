@@ -1,0 +1,33 @@
+
+.content, .title_tile {
+	width: 100%;
+}
+
+table, #login_button, .message {
+	max-width: 800px;
+	margin: 40px auto;
+}
+
+table {
+	border: 2px solid #ccc;
+}
+
+tr {
+	font-size: 1.4em;
+	height: 80px;
+}
+
+
+/* ================= */
+/* = MEDIA QUERIES = */
+/* ================= */
+
+/* = SMART PHONES = */
+
+@media only screen and (max-width: 767px) {
+
+	tr {
+		font-size: 1.2em;
+	}
+
+}

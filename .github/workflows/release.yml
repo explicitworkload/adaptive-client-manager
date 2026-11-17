@@ -1,0 +1,95 @@
+# Publishes a GitHub Release when a push to main changes VERSION to a version
+# that hasn't been released yet. To release: bump VERSION (e.g. 2.0.0 -> 2.1.0),
+# commit and push to main.
+#
+# The release gets tag v<VERSION>, auto-generated notes, and two zips:
+#   adaptive-client-manager-<VERSION>.zip         new installation
+#   adaptive-client-manager-<VERSION>-update.zip  extract over an existing site
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: [VERSION]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Read version
+      id: version
+      run: |
+        version="$(tr -d '[:space:]' < VERSION)"
+        if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+          echo "::error file=VERSION::VERSION must look like 1.2.3 (got '$version')"
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+          echo "Tag v$version already exists; nothing to release."
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Setup PHP
+      if: steps.version.outputs.exists == 'false'
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.4'
+        extensions: mbstring, intl, pdo_sqlite, gd
+        tools: composer
+        coverage: none
+
+    - name: Install dependencies
+      if: steps.version.outputs.exists == 'false'
+      run: composer install --no-interaction --no-progress
+
+    - name: Run tests
+      if: steps.version.outputs.exists == 'false'
+      run: vendor/bin/phpunit
+      env:
+        DATABASE_TEST_URL: sqlite://./testdb.sqlite
+
+    - name: Build packages
+      if: steps.version.outputs.exists == 'false'
+      run: |
+        bin/build-release.sh
+        bin/build-release.sh --update
+        v="${{ steps.version.outputs.version }}"
+        mv build/acm5-release.zip "build/adaptive-client-manager-$v.zip"
+        mv build/acm5-release-update.zip "build/adaptive-client-manager-$v-update.zip"
+
+    - name: Create release
+      if: steps.version.outputs.exists == 'false'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        v="${{ steps.version.outputs.version }}"
+        prerelease=""
+        [[ "$v" == *-* ]] && prerelease="--prerelease"
+        cat > notes.md <<NOTES
+        **New installation:** download \`adaptive-client-manager-$v.zip\` and follow the [README](https://github.com/${{ github.repository }}#installing-on-a-web-host-directadmin).
+
+        **Updating an existing site:** back up first, then extract \`adaptive-client-manager-$v-update.zip\` over the installed folder. Your \`config/app_local.php\`, logo and theme colour are kept.
+        NOTES
+        gh release create "v$v" \
+          --target "$GITHUB_SHA" \
+          --title "v$v" \
+          --notes-file notes.md \
+          --generate-notes \
+          $prerelease \
+          "build/adaptive-client-manager-$v.zip" \
+          "build/adaptive-client-manager-$v-update.zip"
