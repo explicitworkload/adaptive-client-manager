@@ -23,7 +23,7 @@ $logoSrc = 'logo.png';
         <td>
 
         <div>
-            <?= $this->Html->image($logoSrc, ['alt' => 'Logo', 'width' => '214', 'height' => '36']) ?>
+            <?= $this->Html->image($logoSrc, ['alt' => 'Logo', 'width' => '214', 'height' => '36', 'id' => 'logo_preview']) ?>
         </div>
 
         <div id="edit_logo_button" class="button_small"><span class="icon-pencil"></span>Edit Logo</div>
@@ -32,6 +32,8 @@ $logoSrc = 'logo.png';
             <?= $this->Form->create(null, ['type' => 'file', 'id' => 'SettingUploadLogoForm', 'url' => ['controller' => 'Settings', 'action' => 'uploadLogo']]) ?>
             <?= $this->Form->control('logo', ['type' => 'file', 'accept' => 'image/png', 'required' => true, 'label' => 'Choose your new .png logo']) ?>
             <?= $this->Form->end() ?>
+            <div class="progressHolder" id="logo_progress" hidden><div class="progress" style="width: 0"></div></div>
+            <p id="logo_status" class="logo_status" role="status" aria-live="polite"></p>
             <div id="upload_logo_button" class="button_small"><span class="icon-download"></span>Upload Logo</div>
         </div>
 
@@ -98,10 +100,115 @@ $logoSrc = 'logo.png';
         });
 
 
-        // Upload Logo Button
+        // Upload Logo: sent in the background with live progress, then the
+        // public logo URL is re-downloaded to confirm the new file is live.
 
-        $('#upload_logo_button').click(function() {
-            $('#SettingUploadLogoForm').submit();
+        var logoUrl = <?= json_encode($this->Url->image('logo.png'), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+        var logoForm = document.getElementById('SettingUploadLogoForm');
+        var logoInput = logoForm.querySelector('input[type=file]');
+        var uploading = false;
+
+        function logoStatus(text, kind) {
+            $('#logo_status').text(text).attr('class', 'logo_status' + (kind ? ' ' + kind : ''));
+        }
+
+        function logoProgress(percent) {
+            $('#logo_progress').prop('hidden', percent === null).find('.progress').css('width', (percent || 0) + '%');
+        }
+
+        function finishUpload(text, kind) {
+            uploading = false;
+            $('#upload_logo_button').removeClass('disabled');
+            logoStatus(text, kind);
+        }
+
+        function verifyLiveLogo(file) {
+            logoStatus('Uploaded. Checking the live logo…');
+            // cache: 'reload' bypasses the browser cache (no ?query needed, which
+            // some hosting firewalls block on images).
+            fetch(logoUrl, { cache: 'reload', credentials: 'same-origin' })
+                .then(function(response) {
+                    if (!response.ok) {
+                        throw new Error('the server answers HTTP ' + response.status + ' for the logo (its file permissions should be 644)');
+                    }
+                    return response.blob();
+                })
+                .then(function(blob) {
+                    if (blob.size !== file.size) {
+                        throw new Error('the site is still serving the old logo (if Cloudflare caches it, purge its cache)');
+                    }
+                    var url = URL.createObjectURL(blob);
+                    $('#logo_preview, .header .logo img').attr('src', url);
+                    logoProgress(null);
+                    finishUpload('Logo updated. The new logo is live.', 'is-success');
+                })
+                .catch(function(error) {
+                    logoProgress(null);
+                    finishUpload('Uploaded, but ' + error.message + '.', 'is-error');
+                });
+        }
+
+        function uploadLogo() {
+            if (uploading) {
+                return;
+            }
+            var file = logoInput.files[0];
+            if (!file) {
+                logoStatus('Choose a .png file first.', 'is-error');
+                return;
+            }
+            if (file.type !== 'image/png' && !/\.png$/i.test(file.name)) {
+                logoStatus('Only PNG files are allowed.', 'is-error');
+                return;
+            }
+
+            uploading = true;
+            $('#upload_logo_button').addClass('disabled');
+            logoProgress(0);
+            logoStatus('Uploading… 0%');
+
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', logoForm.action);
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+            xhr.setRequestHeader('Accept', 'application/json');
+            xhr.upload.onprogress = function(e) {
+                if (e.lengthComputable) {
+                    var percent = Math.round(e.loaded / e.total * 100);
+                    logoProgress(percent);
+                    logoStatus('Uploading… ' + percent + '%');
+                }
+            };
+            xhr.onload = function() {
+                var data = null;
+                try {
+                    data = JSON.parse(xhr.responseText);
+                } catch (ignore) {}
+
+                if (data && data.ok) {
+                    logoProgress(100);
+                    verifyLiveLogo(file);
+                    return;
+                }
+                logoProgress(null);
+                if (data) {
+                    finishUpload(data.message, 'is-error');
+                } else if (xhr.status === 403) {
+                    finishUpload('The upload was refused because your session expired or your browser blocked cookies. Reload this page and try again.', 'is-error');
+                } else {
+                    finishUpload('The server returned an unexpected response (HTTP ' + xhr.status + '). Details are in logs/error.log.', 'is-error');
+                }
+            };
+            xhr.onerror = function() {
+                logoProgress(null);
+                finishUpload('Network error: the upload did not reach the server.', 'is-error');
+            };
+            xhr.send(new FormData(logoForm));
+        }
+
+        $('#upload_logo_button').on('click', uploadLogo);
+        $(logoForm).on('submit', function(e) {
+            e.preventDefault();
+            uploadLogo();
         });
 
 

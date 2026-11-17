@@ -182,4 +182,26 @@ class AccessControlTest extends TestCase
         $this->get('/dashboard');
         $this->assertResponseContains('| V' . trim((string)file_get_contents(ROOT . DS . 'VERSION')));
     }
+
+    public function testBackgroundLogoUploadGetsJsonReply(): void
+    {
+        $this->loginAs(self::ADMIN);
+        $this->configRequest(['headers' => ['X-Requested-With' => 'XMLHttpRequest', 'Accept' => 'application/json']]);
+        $this->post('/settings/upload-logo', []);
+        $this->assertResponseCode(422);
+        $this->assertContentType('application/json');
+        $this->assertSame(
+            ['ok' => false, 'message' => 'Please choose a PNG image to upload.'],
+            json_decode((string)$this->_response->getBody(), true),
+        );
+        $this->assertSession(null, 'Flash.flash', 'no flash message is left for the next page');
+    }
+
+    public function testPlainLogoUploadRedirectsWithFlash(): void
+    {
+        $this->loginAs(self::ADMIN);
+        $this->post('/settings/upload-logo', []);
+        $this->assertRedirect(['controller' => 'Settings', 'action' => 'editConfig', 1]);
+        $this->assertFlashMessage('Please choose a PNG image to upload.');
+    }
 }

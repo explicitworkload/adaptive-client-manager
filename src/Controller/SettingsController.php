@@ -44,33 +44,100 @@ class SettingsController extends AppController
 
     /**
      * Replace the company logo (webroot/img/logo.png).
+     *
+     * The settings page uploads in the background (XMLHttpRequest) and gets a
+     * JSON reply ({"ok": bool, "message": string}); a plain form post (no
+     * JavaScript) gets a flash message and a redirect instead.
      * Replaces the legacy webroot/post_file.php, which accepted uploads from anyone.
      */
     public function uploadLogo(): Response
     {
         $this->request->allowMethod(['post']);
-        $file = $this->request->getUploadedFile('logo');
-        if (!$file instanceof UploadedFileInterface || $file->getError() !== UPLOAD_ERR_OK) {
-            $this->Flash->error('Please choose a PNG image to upload.');
+        [$ok, $message] = $this->saveUploadedLogo();
 
-            return $this->redirect(['action' => 'editConfig', SettingsTable::ID]);
+        if ($this->request->is('ajax')) {
+            return $this->response
+                ->withType('application/json')
+                ->withStatus($ok ? 200 : 422)
+                ->withStringBody((string)json_encode(['ok' => $ok, 'message' => $message]));
         }
-        $tmp = tempnam(TMP, 'logo');
-        $file->moveTo($tmp);
-        $info = @getimagesize($tmp);
-        if ($info === false || $info[2] !== IMAGETYPE_PNG) {
-            unlink($tmp);
-            $this->Flash->error('Only PNG files are allowed!');
-        } else {
-            $logo = WWW_ROOT . 'img' . DS . 'logo.png';
-            rename($tmp, $logo);
-            // tempnam() creates the file as 0600; the web server may read static
-            // files as a different user, so make it world-readable like the rest.
-            chmod($logo, 0644);
-            $this->Flash->success('File was uploaded successfully!');
-        }
+        $ok ? $this->Flash->success($message) : $this->Flash->error($message);
 
         return $this->redirect(['action' => 'editConfig', SettingsTable::ID]);
+    }
+
+    /**
+     * @return array{0: bool, 1: string} success flag and a message for the user
+     */
+    private function saveUploadedLogo(): array
+    {
+        $file = $this->request->getUploadedFile('logo');
+        if (!$file instanceof UploadedFileInterface || $file->getError() === UPLOAD_ERR_NO_FILE) {
+            return [false, 'Please choose a PNG image to upload.'];
+        }
+        if ($file->getError() !== UPLOAD_ERR_OK) {
+            return [false, $this->uploadErrorMessage($file->getError())];
+        }
+
+        $tmp = tempnam(TMP, 'logo');
+        try {
+            if ($tmp === false) {
+                throw new \RuntimeException('cannot create a temporary file in ' . TMP);
+            }
+            $file->moveTo($tmp);
+            $info = @getimagesize($tmp);
+            if ($info === false || $info[2] !== IMAGETYPE_PNG) {
+                return [false, 'Only PNG files are allowed!'];
+            }
+            $this->installLogo($tmp, WWW_ROOT . 'img' . DS . 'logo.png');
+
+            return [true, 'File was uploaded successfully!'];
+        } catch (\Throwable $e) {
+            $this->log('Logo upload failed: ' . $e->getMessage(), 'error');
+
+            return [false, 'The logo could not be saved: ' . str_replace(ROOT . DS, '', $e->getMessage())
+                . '. Check that webroot/img/ and webroot/img/logo.png are writable by PHP.'];
+        } finally {
+            if (is_string($tmp) && is_file($tmp)) {
+                @unlink($tmp);
+            }
+        }
+    }
+
+    /**
+     * Put the uploaded PNG in place, verifying each step.
+     */
+    private function installLogo(string $source, string $target): void
+    {
+        $expected = md5_file($source);
+        if (is_file($target) && !is_writable($target) && !is_writable(dirname($target))) {
+            throw new \RuntimeException(sprintf('%s is not writable', $target));
+        }
+        // rename() is atomic; copy() is the fallback when rename isn't allowed
+        // (e.g. across filesystems, or the existing file can't be replaced).
+        if (!@rename($source, $target) && !@copy($source, $target)) {
+            $error = error_get_last()['message'] ?? 'unknown error';
+            throw new \RuntimeException(sprintf('cannot write %s (%s)', $target, $error));
+        }
+        // tempnam() creates files as 0600; the web server may read static files
+        // as a different user, so make the logo world-readable like the rest.
+        @chmod($target, 0644);
+        clearstatcache(true, $target);
+        if (md5_file($target) !== $expected) {
+            throw new \RuntimeException(sprintf('%s was not updated', $target));
+        }
+    }
+
+    private function uploadErrorMessage(int $code): string
+    {
+        return match ($code) {
+            UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'That file is larger than the server allows (upload_max_filesize in PHP settings).',
+            UPLOAD_ERR_PARTIAL => 'The upload was interrupted. Please try again.',
+            UPLOAD_ERR_NO_TMP_DIR => 'The server has no temporary folder for uploads (upload_tmp_dir in PHP settings).',
+            UPLOAD_ERR_CANT_WRITE => 'The server could not write the uploaded file to its temporary folder.',
+            UPLOAD_ERR_EXTENSION => 'A PHP extension on the server blocked the upload.',
+            default => 'The upload failed (error ' . $code . ').',
+        };
     }
 
     /**
